@@ -105,19 +105,21 @@ st.title("📄 AI Resume Evaluator")
 st.caption("Upload a job description and a resume (PDF) to get an explainable, "
            "AI-assisted match score — or ask the assistant to find candidates.")
 
+with st.sidebar:
+    st.header("⚙️ Settings")
+    st.markdown("Optional: add a Gemini API key for a more natural-language "
+                 "summary and a conversational AI chat assistant. "
+                 "Without it, local rule-based features are used — "
+                 "the app works fully offline either way.")
+    env_key = os.getenv("GEMINI_API_KEY", "")
+    api_key = st.text_input("Gemini API Key (optional)", type="password", value=env_key)
+
 tab_evaluate, tab_chat = st.tabs(["🎯 Evaluate a Resume", "💬 Ask the Assistant"])
 
 # ---------------------------------------------------------------------------
 # TAB 1 — Resume vs JD evaluation (PDF only)
 # ---------------------------------------------------------------------------
 with tab_evaluate:
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        st.markdown("Optional: add a Gemini API key for a more natural-language "
-                     "summary. Without it, a local rule-based summary is used — "
-                     "the app works fully offline either way.")
-        env_key = os.getenv("GEMINI_API_KEY", "")
-        api_key = st.text_input("Gemini API Key (optional)", type="password", value=env_key)
 
     def get_pdf_files(folder):
         os.makedirs(folder, exist_ok=True)
@@ -244,7 +246,7 @@ with tab_chat:
         with st.chat_message("user"):
             st.markdown(user_query)
 
-        result = engine.answer(user_query)
+        result = engine.answer(user_query, chat_history=st.session_state.chat_history, api_key=api_key)
         with st.chat_message("assistant"):
             st.markdown(result["message"])
         st.session_state.chat_history.append(("assistant", result["message"]))

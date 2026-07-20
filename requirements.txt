@@ -5,5 +5,4 @@ numpy
 plotly
 pypdf
 requests
-
 python-dotenv

@@ -22,7 +22,7 @@ class SemanticMatcher:
             stop_words="english",
             ngram_range=(1, 2),
             max_features=6000,
-            min_df=2,
+            min_df=2 if len(corpus) >= 2 else 1,
         )
         # Fit on the corpus so IDF weights reflect real resume/job language.
         self.vectorizer.fit(corpus if corpus else ["placeholder text"])

@@ -9,6 +9,7 @@ answer to an out-of-scope question.
 import sqlite3
 import re
 import pandas as pd
+import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -51,16 +52,24 @@ class ResumeSearchEngine:
         conn.close()
 
         self._clean_texts = [clean_text(t) for t in self.df["Text"].fillna("")]
+        corpus_size = len(self._clean_texts)
         self.vectorizer = TfidfVectorizer(
-            stop_words="english", ngram_range=(1, 2), max_features=8000, min_df=2,
+            stop_words="english", ngram_range=(1, 2), max_features=8000, 
+            min_df=2 if corpus_size >= 2 else 1,
         )
-        self.doc_matrix = self.vectorizer.fit_transform(self._clean_texts)
+        if corpus_size > 0:
+            self.doc_matrix = self.vectorizer.fit_transform(self._clean_texts)
+        else:
+            self.doc_matrix = None
 
         self.categories = sorted(self.df["Category"].dropna().unique().tolist())
         self._category_vocab = {c.lower() for c in self.categories}
 
     # ---- guardrail ------------------------------------------------------
     def is_relevant(self, query: str) -> bool:
+        if self.doc_matrix is None:
+            return False
+            
         q_clean = clean_text(query)
         if len(q_clean.split()) == 0:
             return False
@@ -90,6 +99,9 @@ class ResumeSearchEngine:
 
     # ---- retrieval --------------------------------------------------------
     def search(self, query: str, top_k: int = 5) -> pd.DataFrame:
+        if self.doc_matrix is None:
+            return pd.DataFrame()
+            
         q_vec = self.vectorizer.transform([clean_text(query)])
         sims = cosine_similarity(q_vec, self.doc_matrix).flatten()
         top_idx = sims.argsort()[::-1][:top_k]
@@ -109,7 +121,7 @@ class ResumeSearchEngine:
         return [s for s, _ in ranked[:top_n_skills]]
 
     # ---- conversational answer ---------------------------------------
-    def answer(self, query: str, top_k: int = 5) -> dict:
+    def answer(self, query: str, chat_history: list = None, api_key: str = "", top_k: int = 5) -> dict:
         if not self.is_relevant(query):
             return {
                 "relevant": False,
@@ -132,9 +144,60 @@ class ResumeSearchEngine:
                 "results": results,
             }
 
+        # Fallback markdown list
         lines = [f"I found {len(results)} candidate(s) that match:"]
         for _, row in results.iterrows():
             lines.append(f"- **{row['Name']}** ({row['Category']}) — "
                           f"skills: {row['Skills']}")
-        message = "\n".join(lines)
-        return {"relevant": True, "message": message, "results": results}
+        fallback_message = "\n".join(lines)
+
+        if not api_key:
+            fallback_message += "\n\n*(Provide an API key in the sidebar for conversational AI answers!)*"
+            return {"relevant": True, "message": fallback_message, "results": results}
+
+        # Format context from results
+        context_lines = []
+        for _, row in results.iterrows():
+            context_lines.append(f"Candidate Name: {row['Name']}\nCategory: {row['Category']}\nSkills: {row['Skills']}\nSummary: {row['Summary']}\nExperience: {row['Experience']}\n")
+        context_str = "\n".join(context_lines)
+
+        contents = []
+        if chat_history:
+            # Exclude the latest user message from the raw history, 
+            # since we'll append it with the augmented context below.
+            for role, text in chat_history[:-1]:
+                gemini_role = "user" if role == "user" else "model"
+                contents.append({
+                    "role": gemini_role,
+                    "parts": [{"text": text}]
+                })
+
+        latest_prompt = (
+            f"You are a helpful recruiting assistant. Answer the user's question based ONLY on the candidates provided below. Do not hallucinate candidate details.\n\n"
+            f"--- CANDIDATES ---\n{context_str}\n"
+            f"--- END CANDIDATES ---\n\n"
+            f"User Question: {query}"
+        )
+        contents.append({
+            "role": "user",
+            "parts": [{"text": latest_prompt}]
+        })
+
+        try:
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": contents,
+                    "generationConfig": {
+                        "temperature": 0.4,
+                        "maxOutputTokens": 1000
+                    }
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            ai_message = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            return {"relevant": True, "message": ai_message, "results": results}
+        except Exception:
+            return {"relevant": True, "message": fallback_message, "results": results}
