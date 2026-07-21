@@ -1,14 +1,14 @@
 """
-Text cleaning and skill-extraction utilities.
+Text cleaning and heuristic extraction utilities.
 
-No external / Hugging Face models are used here on purpose: skill extraction is
-done with a curated vocabulary + regex matching, which is fast, fully local,
-and needs no model download.
+No external / Hugging Face models or LLMs are used here on purpose: extraction is
+done with curated vocabularies + regex matching, which is fast, fully local,
+and needs zero API cost.
 """
 import re
+from typing import Set
 
 # --- Curated skill vocabulary -------------------------------------------------
-# Grouped only for readability; stored as one flat set at import time.
 SKILL_GROUPS = {
     "languages": [
         "python", "java", "javascript", "typescript", "c++", "c#", "go", "golang",
@@ -49,9 +49,6 @@ SKILL_GROUPS = {
 }
 
 SKILL_VOCAB = sorted({s.lower() for group in SKILL_GROUPS.values() for s in group})
-
-# Longer phrases must be checked before their substrings (e.g. "ruby on rails"
-# before "ruby"), so sort by length descending for matching.
 _SKILLS_BY_LENGTH = sorted(SKILL_VOCAB, key=len, reverse=True)
 
 
@@ -65,7 +62,7 @@ def clean_text(text: str) -> str:
     return text
 
 
-def extract_skills(text: str) -> set:
+def extract_skills(text: str) -> Set[str]:
     """Return the set of known skills found in the given text."""
     cleaned = f" {clean_text(text)} "
     found = set()
@@ -74,6 +71,60 @@ def extract_skills(text: str) -> set:
         if re.search(pattern, cleaned):
             found.add(skill)
     return found
+
+
+def extract_years_of_experience(text: str) -> int:
+    """Heuristic extraction of years of experience."""
+    cleaned = text.lower()
+    # Match patterns like "5+ years of experience", "10 yrs", "2 years"
+    pattern = r'(\d{1,2})\+?\s*(?:years?|yrs?)(?:\s*of)?\s*(?:experience|exp)'
+    matches = re.findall(pattern, cleaned)
+    if matches:
+        years = [int(m) for m in matches if int(m) < 60]
+        if years:
+            return max(years)
+    return 0
+
+
+def extract_education_level(text: str) -> str:
+    """Heuristic extraction of highest education level."""
+    cleaned = text.lower()
+    if re.search(r'\b(phd|doctorate|d\.phil)\b', cleaned):
+        return "PhD"
+    elif re.search(r'\b(master|m\.s\.|ms|m\.a\.|ma|mba|msc)\b', cleaned):
+        return "Masters"
+    elif re.search(r'\b(bachelor|b\.s\.|bs|b\.a\.|ba|bsc|btech)\b', cleaned):
+        return "Bachelors"
+    elif re.search(r'\b(associate)\b', cleaned):
+        return "Associates"
+    return "Unknown"
+
+
+def infer_domain(skills_found: Set[str]) -> str:
+    """Infer domain by finding which skill group has the most matches."""
+    group_counts = {group: 0 for group in SKILL_GROUPS.keys()}
+    for skill in skills_found:
+        for group, group_skills in SKILL_GROUPS.items():
+            if skill in group_skills:
+                group_counts[group] += 1
+                break
+    
+    if not skills_found:
+        return "Unknown"
+        
+    best_group = max(group_counts, key=group_counts.get)
+    if group_counts[best_group] == 0:
+        return "Unknown"
+        
+    return best_group.replace("_", " ").title()
+
+
+def extract_summary(text: str) -> str:
+    """Extract a simple summary (e.g., first 300 characters)."""
+    idx = text.lower().find("summary")
+    if idx != -1 and idx < 1000:
+        return text[idx:idx+400].strip()
+    return text[:400].strip()
 
 
 def looks_like_resume_or_jd(text: str, min_words: int = 30) -> bool:
